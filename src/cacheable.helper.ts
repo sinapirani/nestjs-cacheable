@@ -54,21 +54,31 @@ export function generateComposedKey(options: {
 
 const pendingCacheMap = new Map<string, Promise<any>>();
 
-async function fetchCachedValue(key: string) {
+/**
+ * Special wrapper object to distinguish between "null value stored in cache" 
+ * and "no value found in cache"
+ */
+interface CacheWrapper {
+  hasValue: boolean;
+  value: any;
+}
+
+async function fetchCachedValue(key: string): Promise<CacheWrapper> {
   let pendingCachePromise = pendingCacheMap.get(key);
   if (!pendingCachePromise) {
     pendingCachePromise = getCacheManager().get(key);
     pendingCacheMap.set(key, pendingCachePromise);
   }
-  let value;
+  let rawValue;
   try {
-    value = await pendingCachePromise;
+    rawValue = await pendingCachePromise;
+    // If we get here, cache lookup was successful, even if value is null
+    return { hasValue: true, value: rawValue };
   } catch (e) {
     throw e;
   } finally {
     pendingCacheMap.delete(key);
   }
-  return value;
 }
 
 const pendingMethodCallMap = new Map<string, Promise<any>>();
@@ -79,14 +89,18 @@ export async function cacheableHandle(
   ttl?: number,
 ) {
   try {
-    const cachedValue = await fetchCachedValue(key);
-    if (cachedValue !== undefined && cachedValue !== null) return cachedValue;
+    const cachedResult = await fetchCachedValue(key);
+    // Only proceed with method execution if no value was found in cache
+    // This properly handles null/undefined values that were explicitly cached
+    if (cachedResult.hasValue) return cachedResult.value;
   } catch {}
+  
   let pendingMethodCallPromise = pendingMethodCallMap.get(key);
   if (!pendingMethodCallPromise) {
     pendingMethodCallPromise = method();
     pendingMethodCallMap.set(key, pendingMethodCallPromise);
   }
+  
   let value;
   try {
     value = await pendingMethodCallPromise;
@@ -95,6 +109,7 @@ export async function cacheableHandle(
   } finally {
     pendingMethodCallMap.delete(key);
   }
+  
   // v5 ttl ; v4 {ttl:ttl}
   await cacheManager.set(
     key,
